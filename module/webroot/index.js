@@ -2,15 +2,23 @@
 let _cbId = 0;
 function exec(cmd) {
     return new Promise((resolve) => {
-        const key = `_ksu_cb_${Date.now()}_${_cbId++}`;
+        const key = `_nm_cb_${Date.now()}_${_cbId++}`;
+        const cleanup = () => { delete window[key]; };
         window[key] = (errno, stdout, stderr) => {
-            delete window[key];
+            cleanup();
             resolve({ errno, stdout: stdout || '', stderr: stderr || '' });
         };
-        if (typeof ksu !== 'undefined' && ksu.exec) {
-            try { ksu.exec(cmd, '{}', key); } 
-            catch (e) { delete window[key]; resolve({ errno: 1, stdout: '', stderr: e?.message || 'failed' }); }
-        } else resolve({ errno: 1, stdout: '', stderr: 'ksu not defined' });
+        try {
+            if (typeof ksu !== 'undefined' && ksu.exec) {
+                ksu.exec(cmd, '{}', key);
+            } else {
+                cleanup();
+                resolve({ errno: 1, stdout: '', stderr: 'ksu not defined' });
+            }
+        } catch (e) {
+            cleanup();
+            resolve({ errno: 1, stdout: '', stderr: e?.message || 'failed' });
+        }
     });
 }
 
@@ -25,15 +33,18 @@ const LOCALE_NAMES = {
     en: 'English',
     es: 'Español',
     id: 'Bahasa Indonesia',
+    de: 'Deutsch',
     zh: '简体中文',
     ru: 'Русский',
+    pl: 'Polski',
     tr: 'Türkçe',
     vi: 'Tiếng Việt',
     bn: 'বাংলা',
     ja: '日本語',
-    ar: 'العربيه'
+    ar: 'العربية',
+    'ar-dz': 'العربية (الدارجة الجزائرية)'
 };
-const RTL_LOCALES = new Set(['ar']);
+const RTL_LOCALES = new Set(['ar', 'ar-dz']);
 
 const numberFormatterCache = Object.create(null);
 
@@ -96,6 +107,7 @@ async function setAppLocale(locale, refreshView = true) {
     });
 
     renderLanguagePicker();
+    if (typeof renderThemePicker === 'function') renderThemePicker();
     const activeViewId = document.querySelector('.view-content.active')?.id;
 
     for (const id in viewLoadState) viewLoadState[id] = id === activeViewId;
@@ -125,7 +137,10 @@ function renderLanguagePicker() {
 
     if (!wrapper.dataset.listenerAttached) {
         document.getElementById('lang-select-trigger').onclick = (e) => { 
-            e.stopPropagation(); 
+            e.stopPropagation();
+            document.querySelectorAll('.custom-select-wrapper.open').forEach(w => {
+                if (w !== wrapper) w.classList.remove('open');
+            });
             wrapper.classList.toggle('open'); 
         };
         document.addEventListener('click', () => wrapper.classList.remove('open'));
@@ -137,7 +152,8 @@ function renderLanguagePicker() {
 const MOD_DIR = "/data/adb/modules";
 const NM_DATA = "/data/adb/nomount";
 const NM_BIN = "/data/adb/modules/nomount/bin/nm";
-const FILES = { disable: `${NM_DATA}/disable`, exclusions: `${NM_DATA}/.exclusion_list.json`, isolated: `${NM_DATA}/.block_isolated_uids` };
+const RULE_PATHS = `${MOD_DIR}/nomount/rule-paths.sh`;
+const FILES = { disable: `${NM_DATA}/disable`, exclusions: `${NM_DATA}/.exclusion_list.json`, isolated: `${NM_DATA}/.block_isolated_uids`, theme: `${NM_DATA}/theme.json` };
 const APP_ICON_FALLBACK = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzgwODA4MCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==";
 const viewLoadState = { 'view-home': false, 'view-modules': false, 'view-exclusions': false, 'view-options': false };
 
@@ -207,15 +223,264 @@ function applyIcons() {
     });
 }
 
-let cachedMetaTheme = null;
-function syncSystemBarTheme() {
-    if (!cachedMetaTheme) cachedMetaTheme = document.querySelector('meta[name="theme-color"]');
-    if (!cachedMetaTheme) return;
+const THEME_NAMES = { system: 'System', light: 'Light', dark: 'Dark', amoled: 'AMOLED' };
+function renderThemePicker() {
+    const wrapper = document.getElementById('theme-select-wrapper');
+    const valueDisplay = document.getElementById('theme-select-value');
+    const menu = document.getElementById('theme-select-menu');
+    if (!wrapper || !valueDisplay || !menu) return;
 
-    const cs = getComputedStyle(document.documentElement);
-    const surfaceColor = cs.getPropertyValue('--md-sys-color-background').trim() ||
-                         cs.getPropertyValue('--md-sys-color-surface').trim();
-    if (surfaceColor) cachedMetaTheme.setAttribute('content', surfaceColor);
+    menu.replaceChildren();
+    for (const t in THEME_NAMES) {
+        const optionEl = document.createElement('div');
+        optionEl.className = `custom-select-option ${t === activeTheme ? 'selected' : ''}`;
+        const translatedName = translations[`theme_${t}`] || THEME_NAMES[t];
+        optionEl.textContent = translatedName;
+        if (t === activeTheme) valueDisplay.textContent = translatedName;
+
+        optionEl.onclick = (e) => {
+            e.stopPropagation();
+            wrapper.classList.remove('open');
+            if (t !== activeTheme) {
+                activeTheme = t;
+                localStorage.setItem('nm_theme', t);
+                applyAppearance();
+                renderThemePicker();
+                if (typeof syncThemeToDisk === 'function') syncThemeToDisk();
+            }
+        };
+        menu.appendChild(optionEl);
+    }
+
+    if (!wrapper.dataset.listenerAttached) {
+        document.getElementById('theme-select-trigger').onclick = (e) => { 
+            e.stopPropagation(); 
+            document.querySelectorAll('.custom-select-wrapper.open').forEach(w => {
+                if (w !== wrapper) w.classList.remove('open');
+            });
+            wrapper.classList.toggle('open'); 
+        };
+        document.addEventListener('click', () => wrapper.classList.remove('open'));
+        wrapper.dataset.listenerAttached = 'true';
+    }
+}
+
+let activeTheme = localStorage.getItem('nm_theme') || 'system';
+let isMaterial = localStorage.getItem('nm_material') !== 'false';
+let customColor = localStorage.getItem('nm_custom_color') || '#6750a4';
+
+function hexToHSL(hex) {
+    let r = parseInt(hex.slice(1, 3), 16) / 255;
+    let g = parseInt(hex.slice(3, 5), 16) / 255;
+    let b = parseInt(hex.slice(5, 7), 16) / 255;
+    let max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if (max === min) {
+        h = s = 0;
+    } else {
+        let d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+const _PALETTE_ROLES = {
+    light: {
+        primary:                ['primary', 40, 0.85],
+        onPrimary:              ['primary', 90, 0.40],
+        primaryContainer:       ['primary', 90, 0.55],
+        onPrimaryContainer:     ['primary', 10, 0.75],
+        secondaryContainer:     ['secondary', 35, 0.50],
+        onSecondaryContainer:   ['secondary', 90, 0.45],
+        surface:                ['neutral', 98, 0.40],
+        background:             ['neutral', 92, 0.80],
+        surfaceContainer:       ['neutral', 88, 0.40],
+        surfaceContainerHigh:   ['neutral', 90, 0.50],
+        surfaceContainerHighest:['neutral', 94, 0.60],
+        onSurface:              ['neutral', 10, 0.80],
+        onSurfaceVariant:       ['neutralVariant', 30, 0.16],
+        outline:                ['neutralVariant', 50, 0.20],
+        error:                  ['error', 40, 0.85],
+        onError:                ['error', 100, 0.00],
+        errorContainer:         ['error', 90, 0.55],
+        onErrorContainer:       ['error', 10, 0.75],
+    },
+    dark: {
+        primary:                ['primary', 80, 0.55],
+        onPrimary:              ['primary', 20, 0.65],
+        primaryContainer:       ['primary', 30, 0.65],
+        onPrimaryContainer:     ['primary', 80, 0.45],
+
+        secondaryContainer:     ['secondary', 24, 0.50],
+        onSecondaryContainer:   ['secondary', 80, 0.30],
+
+        surface:                ['neutral', 10, 0.60],
+        background:             ['neutral', 6, 0.90],
+        surfaceContainer:       ['neutral', 12, 0.60],
+        surfaceContainerHigh:   ['neutral', 17, 0.60],
+        surfaceContainerHighest:['neutral', 22, 0.60],
+        onSurface:              ['neutral', 80, 0.06],
+        onSurfaceVariant:       ['neutralVariant', 80, 0.16],
+        outline:                ['neutralVariant', 60, 0.20],
+
+        error:                  ['error', 75, 0.95],
+        onError:                ['error', 20, 0.65],
+        errorContainer:         ['error', 50, 0.95],
+        onErrorContainer:       ['error', 60, 0.45],
+    },
+};
+
+_PALETTE_ROLES.amoled = Object.assign({}, _PALETTE_ROLES.dark, {
+    surface:                ['neutral', 4, 0.02],
+    background:             ['neutral', 4, 0.02],
+    surfaceContainer:       ['neutral', 8, 0.08],
+    surfaceContainerHigh:   ['neutral', 12, 0.12],
+    surfaceContainerHighest:['neutral', 16, 0.16],
+});
+
+const _PALETTE_HUES = {
+    primary:        0,
+    secondary:     -4,
+    neutral:        8,
+    neutralVariant: 8,
+    error:          4,
+};
+
+const hslToHex = (h, s, l) => {
+    l /= 100;
+    const a = s * Math.min(l, 1 - l) / 100;
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * color).toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+function _tone(h, s, tone) {
+    const t = tone / 100;
+    const bell = Math.pow(Math.sin(Math.PI * t), 0.9);
+    const sat = Math.min(1, s * bell);
+    return hslToHex(h * 360, sat * 100, tone);
+}
+
+function computePalette(seedHex, scheme) {
+    const { h: seedH, s: seedS } = hexToHSL(seedHex);
+    const seedHue = seedH / 360;
+    const seedSat = seedS / 100;
+    const roles = _PALETTE_ROLES[scheme] || _PALETTE_ROLES.light;
+
+    const out = {};
+    for (const [role, [palette, tone, chroma]] of Object.entries(roles)) {
+        const h = (palette === 'error') ? _PALETTE_HUES.error / 360 : (seedHue + _PALETTE_HUES[palette] / 360 + 1) % 1;
+        const s = (palette === 'error') ? chroma : seedSat * chroma;
+        out['--md-sys-color-' + role.replace(/[A-Z]/g, c => '-' + c.toLowerCase())] =
+            _tone(h, s, tone);
+    }
+    return out;
+}
+
+let _nmSeed = null, _nmMqDark = null;
+function getSeedColor() {
+    if (!isMaterial) return customColor;
+    if (_nmSeed) return _nmSeed;
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+    _nmSeed = /^#[0-9a-f]{6}$/i.test(v) ? v : '#6750a4';
+    return _nmSeed;
+}
+
+function resolveScheme() {
+    if (activeTheme === 'light') return 'light';
+    if (activeTheme === 'dark')  return 'dark';
+    if (activeTheme === 'amoled') return 'amoled';
+    // 'system'
+    return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyAppearance() {
+    const root = document.documentElement;
+    root.setAttribute('data-theme', activeTheme);
+    root.setAttribute('data-material', isMaterial);
+
+    const scheme = resolveScheme();
+    root.setAttribute('data-scheme', scheme);
+
+    const palette = computePalette(getSeedColor(), scheme);
+    for (const [name, value] of Object.entries(palette))
+        root.style.setProperty(name, value);
+
+    if (!isMaterial)
+        root.style.setProperty('--nm-custom-color', customColor);
+    else
+        root.style.removeProperty('--nm-custom-color');
+
+    if (!_nmMqDark) {
+        _nmMqDark = matchMedia('(prefers-color-scheme: dark)');
+        _nmMqDark.addEventListener('change', () => {
+            if (activeTheme === 'system') {
+                _nmSeed = null;
+                applyAppearance();
+            }
+        });
+    }
+}
+// Apply immediately to prevent flashes
+applyAppearance();
+
+let nmThemeDirty = false;
+async function syncThemeToDisk() {
+    nmThemeDirty = true;
+    const config = { theme: activeTheme, material: isMaterial, color: customColor };
+    const jsonStr = JSON.stringify(config);
+    const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
+    await exec(`mkdir -p ${NM_DATA} && echo "${b64}" | base64 -d > ${FILES.theme}.tmp && mv -f ${FILES.theme}.tmp ${FILES.theme}`);
+}
+
+async function restoreThemeFromDisk() {
+    try {
+        const { stdout, errno } = await exec(`cat ${FILES.theme} 2>/dev/null`);
+        if (errno !== 0 || !stdout) return;
+
+        let config;
+        try { config = JSON.parse(stdout.trim()); } catch { return; }
+
+        if (nmThemeDirty) return;
+
+        const diskTheme = (config.theme && config.theme in THEME_NAMES) ? config.theme : activeTheme;
+        const diskMaterial = config.material !== undefined ? Boolean(config.material) : isMaterial;
+        const diskColor = (typeof config.color === 'string' && /^#[0-9a-f]{6}$/i.test(config.color)) ? config.color : customColor;
+
+        if (diskTheme === activeTheme && diskMaterial === isMaterial && diskColor === customColor) return;
+
+        activeTheme = diskTheme;
+        isMaterial = diskMaterial;
+        customColor = diskColor;
+        localStorage.setItem('nm_theme', activeTheme);
+        localStorage.setItem('nm_material', isMaterial);
+        localStorage.setItem('nm_custom_color', customColor);
+
+        applyAppearance();
+        if (document.getElementById('theme-select-menu')) renderThemePicker();
+
+        const swMat = document.querySelector('#setting-material input');
+        const customColCard = document.getElementById('custom-color-card');
+        const colorIndicator = document.getElementById('custom-color-indicator');
+        const matCard = swMat?.closest('.segment-card');
+
+        if (swMat) swMat.checked = isMaterial;
+        if (customColCard) customColCard.style.display = isMaterial ? 'none' : '';
+        if (colorIndicator) colorIndicator.style.backgroundColor = customColor;
+        if (matCard) {
+            matCard.style.borderEndStartRadius = isMaterial ? 'var(--nm-segment-outer-corner)' : '';
+            matCard.style.borderEndEndRadius = isMaterial ? 'var(--nm-segment-outer-corner)' : '';
+        }
+    } catch (e) {}
 }
 
 const homeUI = {};
@@ -239,6 +504,83 @@ const UI = {};
 let currentActiveViewId = 'view-home';
 let currentActiveViewTitle = '';
 
+let nmHistory = { level: 0, dialog: null, depth: 0 };
+history.replaceState(nmHistory, '');
+
+const nmDialogClosers = { presets: null, advanced: null };
+function nmPush(state) {
+    nmHistory = { level: state.level, dialog: state.dialog ?? null, depth: nmHistory.depth + 1 };
+    history.pushState(nmHistory, '');
+}
+function nmReplace(state) {
+    nmHistory = { level: state.level, dialog: state.dialog ?? null, depth: nmHistory.depth };
+    history.replaceState(nmHistory, '');
+}
+
+window.addEventListener('popstate', (e) => {
+    const prev = nmHistory;
+    const next = e.state || { level: 0, dialog: null, depth: 0 };
+
+    if (prev.dialog === 'advancedColor' && next.dialog !== 'advancedColor')
+        nmDialogClosers.advanced?.();
+    if (prev.dialog === 'colorPresets' && next.dialog !== 'colorPresets')
+        nmDialogClosers.presets?.();
+    if (prev.level === 3 && next.level < 3)
+        closeUidModalFromHistory();
+    if (prev.level === 2 && next.level < 2) {
+        closeAppSelector(true);
+        exitMultiSelectMode();
+    }
+    if (prev.level >= 1 && next.level === 0)
+        switchToTab('view-home', false);
+
+    nmHistory = next;
+});
+
+function switchToTab(target, pushToHistory = true) {
+    if (currentActiveViewId === target && document.getElementById(target)?.classList.contains('active')) return;
+
+    const navItems = document.querySelectorAll('.nav-item');
+    const views = document.querySelectorAll('.view-content');
+    const fab = document.getElementById('fab-container');
+
+    navItems.forEach(nav => {
+        nav.classList.remove('active');
+        const i = nav.querySelector('md-icon');
+        if (i) setIcon(i, (i.dataset.icon || i.textContent.trim()), nav.dataset.target === target ? 'filled' : 'outline');
+        if (nav.dataset.target === target) nav.classList.add('active');
+    });
+
+    views.forEach(v => v.classList.remove('active'));
+    const targetView = document.getElementById(target);
+    if (targetView) targetView.classList.add('active');
+
+    currentActiveViewId = target;
+    currentActiveViewTitle = targetView.querySelector('.header-title')?.textContent?.trim() || '';
+
+    updateTopAppBar();
+    if (fab) fab.classList.toggle('visible', target === 'view-exclusions');
+
+    if (pushToHistory) {
+        if (target === 'view-home') {
+            if (nmHistory.depth > 0) history.go(-nmHistory.depth);
+        } else {
+            if (nmHistory.level === 0) nmPush({ level: 1 });
+            else nmReplace({ level: 1 });
+        }
+    }
+
+    setTimeout(() => {
+        if (!viewLoadState[target]) {
+            viewLoadState[target] = true;
+            if (target === 'view-home') loadHome();
+            else if (target === 'view-modules') loadModules();
+            else if (target === 'view-exclusions') loadExclusions();
+            else if (target === 'view-options') loadOptions();
+        }
+    }, 0);
+}
+
 function updateTopAppBar() {
     if (!UI.c) {
         UI.c = document.querySelector('.page-container');
@@ -246,7 +588,7 @@ function updateTopAppBar() {
         UI.title = document.getElementById('top-app-bar-title');
     }
 
-    if (!['view-modules', 'view-exclusions'].includes(currentActiveViewId)) {
+    if (!['view-modules', 'view-exclusions', 'view-options'].includes(currentActiveViewId)) {
         if (UI.title.textContent !== '') UI.title.textContent = '';
         UI.bar.style.setProperty('--top-app-bar-opacity', '0');
         UI.bar.style.setProperty('--top-app-title-opacity', '0');
@@ -269,45 +611,13 @@ function updateTopAppBar() {
 
 function initNavigation() {
     const navItems = document.querySelectorAll('.nav-item');
-    const views = document.querySelectorAll('.view-content');
-    const fab = document.getElementById('fab-container');
-
     navItems.forEach(item => {
         const iconEl = item.querySelector('md-icon');
         if (iconEl) {
             const iconName = iconEl.dataset.icon || iconEl.textContent.trim();
             setIcon(iconEl, iconName, item.classList.contains('active') ? 'filled' : 'outline');
         }
-
-        item.addEventListener('click', () => {
-            navItems.forEach(nav => {
-                nav.classList.remove('active');
-                const i = nav.querySelector('md-icon');
-                if (i) setIcon(i, (i.dataset.icon || i.textContent.trim()), nav === item ? 'filled' : 'outline');
-            });
-            item.classList.add('active');
-            const target = item.dataset.target;
-            
-            views.forEach(v => v.classList.remove('active'));
-            const targetView = document.getElementById(target);
-            targetView.classList.add('active');
-            
-            currentActiveViewId = target;
-            currentActiveViewTitle = targetView.querySelector('.header-title')?.textContent?.trim() || '';
-            
-            updateTopAppBar();
-            fab.classList.toggle('visible', target === 'view-exclusions');
-
-            setTimeout(() => {
-                if (!viewLoadState[target]) {
-                    viewLoadState[target] = true;
-                    if (target === 'view-home') loadHome();
-                    else if (target === 'view-modules') loadModules();
-                    else if (target === 'view-exclusions') loadExclusions();
-                    else if (target === 'view-options') loadOptions();
-                }
-            }, 0);
-        });
+        item.addEventListener('click', () => switchToTab(item.dataset.target, true));
     });
 }
 
@@ -435,14 +745,25 @@ async function loadModules() {
             const hasDisable = disableStr === 'true', hasSkipMount = skipStr === 'true';
             const fileCount = ruleCountByMod[modId] || 0;
             const isLoaded = fileCount > 0;
-            const statusKey = isLoaded ? (hasDisable ? 'status_loaded' : 'status_active') : (hasDisable ? 'status_disabled' : (hasSkipMount ? 'status_skipped' : 'status_inactive'));
+            const statusKey = isLoaded ? ((hasDisable || hasSkipMount) ? 'status_loaded' : 'status_active') : (hasDisable ? 'status_disabled' : (hasSkipMount ? 'status_skipped' : 'status_inactive'));
             return `
                 <div class="card module-card" data-module-id="${modId}">
                     <div class="module-header">
                         <div class="module-info">
                             <h3>${realName || modId}</h3>
-                            <p>${translate('status_label')}: ${translate(statusKey)}</p>
-                            <p class="file-count"><span>${translate('modules_injected_files', { count: fileCount })}</span></p>
+                            <div class="module-chips">
+                                <span class="status-chip md-chip status-${statusKey.replace('status_', '')}">
+                                    ${translate(statusKey)}
+                                </span>
+                                <span class="files-chip md-chip" style="${fileCount > 0 ? '' : 'display: none;'}">
+                                    <md-icon data-icon="syringe">
+                                        <svg viewBox="0 0 48 48" aria-hidden="true" style="width: 1.2em; height: 1.2em; fill: currentColor; transform: scaleX(-1);">
+                                            <path d="M45.4,10.3,37.7,2.6a2.1,2.1,0,0,0-2.9,0,2.1,2.1,0,0,0,0,2.8l2.5,2.5-3.4,3.4L28.5,5.8h0a2,2,0,1,0-2.8,2.9L9.9,24.4a6.3,6.3,0,0,0-1.7,5.2l1.1,6.3L4.6,40.6a1.9,1.9,0,0,0,0,2.8,1.9,1.9,0,0,0,2.8,0l4.7-4.7,6.3,1.1a6,6,0,0,0,5.2-1.7L39.4,22.3a2,2,0,1,0,2.9-2.7l-5.6-5.5,3.4-3.4,2.5,2.5a2,2,0,0,0,1.4.6A2.1,2.1,0,0,0,45.4,10.3Zm-24.6,25a2.3,2.3,0,0,1-1.8.5l-5.8-1-1-5.8a2.3,2.3,0,0,1,.5-1.8l2.6-2.5,3.2,3.2a2.1,2.1,0,0,0,2.9,0,1.9,1.9,0,0,0,0-2.8l-3.3-3.3,3.4-3.3,3.3,3.2a2,2,0,0,0,2.8-2.8l-3.3-3.3,4.2-4.1,8,8Z"/>
+                                        </svg>
+                                    </md-icon>
+                                    <span class="files-count-text">${fileCount > 0 ? translate('modules_injected_files', { count: fileCount }) : ''}</span>
+                                </span>
+                            </div>
                         </div>
                         <label class="custom-switch" id="switch-${modId}">
                             <input type="checkbox" class="switch-input" aria-label="Toggle module" ${!hasDisable ? 'checked' : ''}>
@@ -453,6 +774,9 @@ async function loadModules() {
                     </div>
                     <div class="module-divider"></div>
                     <div class="module-extension">
+                        <button class="btn-skip-action ${hasSkipMount ? 'unskip' : ''}" id="btn-skip-${modId}">
+                            <span>${translate(hasSkipMount ? 'modules_unskip' : 'modules_skip')}</span>
+                        </button>
                         <button class="btn-hot-action ${isLoaded ? 'unload' : ''}" id="btn-hot-${modId}">
                             <span>${translate(isLoaded ? 'modules_hot_unload' : 'modules_hot_load')}</span>
                         </button>
@@ -476,34 +800,9 @@ async function loadModule(modId) {
         valid_dirs=""
         for p in ${TARGET_PARTITIONS}; do [ -d "$p" ] && { [ -d "/$p" ] || [ -d "/system/$p" ]; } && valid_dirs="$valid_dirs $p"; done
         [ -z "$valid_dirs" ] && exit 0
-        find -L $valid_dirs \\( -type d -o -type c -o -name ".replace" \\) -exec sh -c '
-            for f do
-                v="$f"
-                case "$v" in system/*)
-                    p="\${v#system/}"; p="\${p%%/*}"
-                    case "$p" in vendor|system_ext|product|odm|apex|oem|optics|prism|mi_ext|my_*) v="$p\${v#system/$p}" ;; esac
-                ;; esac
-                if [ -d "$f" ]; then
-                    getfattr -n trusted.overlay.opaque "$f" 2>/dev/null | grep -q "=\\"y\\"" && printf "/%s\\0" "$v"
-                elif [ "\${f##*/}" = ".replace" ]; then
-                    printf "/%s\\0" "\${v%/.replace}"
-                else
-                    printf "/%s\\0" "$v"
-                fi
-            done
-        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add --whiteout
+        find -L $valid_dirs \\( -type d -o -type c -o -name ".replace" \\) -exec sh "${RULE_PATHS}" path "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule add --whiteout
 
-        find -L $valid_dirs  \\( -type f -o -type l \\) ! -name ".replace" -exec sh -c '
-            mod="$1"; shift
-            for f do
-                v="$f"
-                case "$v" in system/*)
-                    p="\${v#system/}"; p="\${p%%/*}"
-                    case "$p" in vendor|system_ext|product|odm|apex|oem|optics|prism|mi_ext|my_*) v="$p\${v#system/$p}" ;; esac
-                ;; esac
-                printf "/%s\\0%s/%s\\0" "$v" "$mod" "$f"
-            done
-        ' _ "${modPath}" {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule add
+        find -L $valid_dirs  \\( -type f -o -type l \\) ! -name ".replace" -exec sh "${RULE_PATHS}" pair "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule add
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
@@ -515,22 +814,7 @@ async function unloadModule(modId) {
         valid_dirs=""
         for p in ${TARGET_PARTITIONS}; do [ -d "$p" ] && { [ -d "/$p" ] || [ -d "/system/$p" ]; } && valid_dirs="$valid_dirs $p"; done
         [ -z "$valid_dirs" ] && exit 0
-        find -L $valid_dirs \\( -type f -o -type l -o -type c -o -type d \\) -exec sh -c '
-            for f do
-                v="$f"
-                case "$v" in system/*)
-                    p="\${v#system/}"; p="\${p%%/*}"
-                    case "$p" in vendor|system_ext|product|odm|apex|oem|optics|prism|mi_ext|my_*) v="$p\${v#system/$p}" ;; esac
-                ;; esac
-                if [ -d "$f" ]; then
-                    getfattr -n trusted.overlay.opaque "$f" 2>/dev/null | grep -q "=\\"y\\"" && printf "/%s\\0" "$v"
-                elif [ "\${f##*/}" = ".replace" ]; then
-                    printf "/%s\\0" "\${v%/.replace}"
-                else
-                    printf "/%s\\0" "$v"
-                fi
-            done
-        ' _ {} + 2>/dev/null | xargs -0 -r ${NM_BIN} rule del
+        find -L $valid_dirs \\( -type f -o -type l -o -type c -o -type d \\) -exec sh "${RULE_PATHS}" path "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule del
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
@@ -717,7 +1001,7 @@ async function ensureAppsCache(force = false) {
     return appLoadingPromise;
 }
 
-function closeAppSelector() {
+function closeAppSelector(fromHistory = false) {
     const modal = document.getElementById('app-selector-modal');
     const content = modal?.querySelector('.modal-content');
     modal?.classList.remove('active');
@@ -725,6 +1009,7 @@ function closeAppSelector() {
     content?.style.removeProperty('--app-selector-top');
     content?.style.removeProperty('--app-selector-height');
     if (listObserver) listObserver.disconnect();
+    if (!fromHistory && nmHistory.level >= 2) history.back();
 }
 
 function openAppSelector() {
@@ -742,6 +1027,8 @@ function openAppSelector() {
     content.style.setProperty('--app-selector-height', `${Math.round(viewportHeight * 0.9)}px`);
     content.classList.add('viewport-locked');
     modal.classList.add('active');
+
+    if (nmHistory.level < 2) nmPush({ level: 2 });
     if (listObserver) listObserver.disconnect();
     document.getElementById('filter-menu').classList.remove('active'); 
     searchInput.value = '';
@@ -852,42 +1139,253 @@ async function addExclusion(uid, label, pkg) {
 }
 
 // Options
+let optionsInitialized = false;
 async function loadOptions() {
-    const swSafe = document.querySelector('#setting-safemode input'),
-          swIso = document.querySelector('#setting-isolated input'),
-          swIsoCard = document.getElementById('setting-isolated-card'),
-          btnClear = document.getElementById('btn-clear-rules');
+    if (!optionsInitialized) initOptionsUI();
 
-    if (swSafe) {
+    const swSafe = document.querySelector('#setting-safemode input');
+    const swIso = document.querySelector('#setting-isolated input');
+    const swIsoCard = document.getElementById('setting-isolated-card');
+
+    if (swSafe)
         swSafe.checked = (await exec(`[ -f ${FILES.disable} ] && echo yes`)).stdout.includes('yes');
-        swSafe.onchange = e => exec(e.target.checked ? `touch ${FILES.disable}` : `rm ${FILES.disable}`);
-    }
 
     if (swIso && swIsoCard) {
+        const safeModeCard = document.getElementById('setting-safemode').closest('.segment-card');
         const isoCheck = await exec(`${NM_BIN} uid block_isolated`);
         const out = isoCheck.stdout.trim();
+
         if (isoCheck.errno === 0 && (out === '1' || out === '0')) {
             swIsoCard.style.display = '';
+            if (safeModeCard) {
+                safeModeCard.style.borderStartStartRadius = '';
+                safeModeCard.style.borderStartEndRadius = '';
+            }
             swIso.checked = (out === '1');
-            swIso.onchange = async (e) => {
-                const isChecked = e.target.checked;
-                swIsoCard.dataset.busy = 'true';
-                await exec(`${NM_BIN} uid block_isolated ${isChecked ? 'on' : 'off'}`);
-                await exec(isChecked ? `touch ${FILES.isolated}` : `rm ${FILES.isolated}`);
-                delete swIsoCard.dataset.busy;
-            };
+        } else {
+            if (safeModeCard) {
+                safeModeCard.style.borderStartStartRadius = 'var(--nm-segment-outer-corner)';
+                safeModeCard.style.borderStartEndRadius = 'var(--nm-segment-outer-corner)';
+            }
         }
     }
+}
 
-    if (btnClear) {
-        btnClear.onclick = async () => {
+function initOptionsUI() {
+    optionsInitialized = true;
+    renderThemePicker();
+
+    const swMat = document.querySelector('#setting-material input');
+    const customColCard = document.getElementById('custom-color-card');
+    const colorIndicator = document.getElementById('custom-color-indicator');
+    const dialogPresets = document.getElementById('dialog-color-presets');
+    const dialogAdv = document.getElementById('dialog-adv-color');
+
+    if (swMat && customColCard && colorIndicator) {
+        const matCard = swMat.closest('.segment-card');
+        const updateAppearanceCards = () => {
+            customColCard.style.display = isMaterial ? 'none' : ''; 
+            if (matCard) {
+                matCard.style.borderEndStartRadius = isMaterial ? 'var(--nm-segment-outer-corner)' : '';
+                matCard.style.borderEndEndRadius = isMaterial ? 'var(--nm-segment-outer-corner)' : '';
+            }
+        };
+
+        swMat.checked = isMaterial;
+        colorIndicator.style.backgroundColor = customColor;
+        updateAppearanceCards();
+
+        swMat.onchange = (e) => {
+            isMaterial = e.target.checked;
+            localStorage.setItem('nm_material', isMaterial);
+            updateAppearanceCards();
+            applyAppearance();
+            syncThemeToDisk();
+        };
+
+        let originalColor = customColor;
+        let isAdvOpen = false;
+
+        const renderPresets = () => {
+            const grid = document.getElementById('color-presets-grid');
+            grid.replaceChildren();
+            const PALETTE = ['#ba1a1a', '#e86d28', '#d6b007', '#4c6b1f', '#006874', '#0061a4', '#3f5aa6', '#9a25ae'];
+            PALETTE.forEach(c => {
+                const btn = document.createElement('div');
+                btn.className = `preset-swatch ${c === customColor ? 'selected' : ''}`;
+                btn.style.backgroundColor = c;
+                btn.onclick = () => {
+                    customColor = c;
+                    originalColor = c;
+                    localStorage.setItem('nm_custom_color', customColor);
+                    applyAppearance();
+                    renderPresets();
+                    colorIndicator.style.backgroundColor = customColor;
+                    syncThemeToDisk();
+                };
+                grid.appendChild(btn);
+            });
+        };
+
+        const initAdvancedPicker = () => {
+            const { h, s, l } = hexToHSL(customColor);
+            const hInp = document.getElementById('adv-slider-h'),
+                  sInp = document.getElementById('adv-slider-s'),
+                  lInp = document.getElementById('adv-slider-l');
+            const preview = document.getElementById('adv-color-preview');
+            const hexInp = document.getElementById('adv-hex-input');
+
+            hInp.value = h;
+            sInp.value = s;
+            lInp.value = l;
+
+            let isTypingHex = false;
+            const updateLive = () => {
+                const hex = hslToHex(hInp.value, sInp.value, lInp.value);
+                preview.style.backgroundColor = hex;
+                customColor = hex; 
+                applyAppearance();
+                if (!isTypingHex && hexInp)
+                    hexInp.value = hex.substring(1).toUpperCase();
+            };
+
+            hInp.oninput = updateLive;
+            sInp.oninput = updateLive;
+            lInp.oninput = updateLive;
+            
+            // Hex Input Logic
+            if (hexInp) {
+                hexInp.oninput = (e) => {
+                    isTypingHex = true;
+                    let val = e.target.value.replace(/[^0-9A-Fa-f]/g, '');
+                    let parsedHex = null;
+                    if (val.length === 6)
+                        parsedHex = '#' + val;
+                    else if (val.length === 3)
+                        parsedHex = '#' + val[0] + val[0] + val[1] + val[1] + val[2] + val[2];
+
+                    if (parsedHex) {
+                        const newHsl = hexToHSL(parsedHex);
+                        hInp.value = newHsl.h;
+                        sInp.value = newHsl.s;
+                        lInp.value = newHsl.l;
+                        preview.style.backgroundColor = parsedHex;
+                        customColor = parsedHex;
+                        applyAppearance();
+                    }
+                    isTypingHex = false;
+                };
+
+                hexInp.onblur = () => {
+                    let val = hexInp.value.replace(/[^0-9A-Fa-f]/g, '');
+                    if (val.length === 3)
+                        val = val[0] + val[0] + val[1] + val[1] + val[2] + val[2];
+                    if (val.length !== 6) {
+                        val = customColor.substring(1);
+                    }
+                    hexInp.value = val.toUpperCase();
+                };
+            }
+
+            updateLive();
+        };
+        customColCard.onclick = () => {
+            originalColor = customColor;
+            history.pushState({ dialog: 'colorPresets' }, '');
+            dialogPresets.classList.add('show');
+            renderPresets();
+        };
+
+
+        nmDialogClosers.presets = () => { dialogPresets.classList.remove('show'); };
+        nmDialogClosers.advanced = () => {
+            if (!isAdvOpen) return;
+            dialogAdv.classList.remove('show');
+            isAdvOpen = false;
+            customColor = originalColor;
+            applyAppearance();
+            renderPresets();
+        };
+
+        customColCard.onclick = () => {
+            originalColor = customColor;
+            nmPush({ level: 1, dialog: 'colorPresets' });
+            dialogPresets.classList.add('show');
+            renderPresets();
+        };
+
+        document.getElementById('btn-color-presets-close').onclick = () => history.back();
+        document.getElementById('btn-adv-color-open').onclick = () => {
+            isAdvOpen = true;
+            nmPush({ level: 1, dialog: 'advancedColor' });
+            dialogAdv.classList.add('show');
+            initAdvancedPicker();
+        };
+        document.getElementById('btn-adv-color-cancel').onclick = () => history.back();
+        document.getElementById('btn-adv-color-accept').onclick = () => {
+            originalColor = customColor;
+            localStorage.setItem('nm_custom_color', customColor);
+            colorIndicator.style.backgroundColor = customColor;
+            history.back();
+            syncThemeToDisk();
+        };
+    }
+
+    const swSafe = document.querySelector('#setting-safemode input');
+    const swIso = document.querySelector('#setting-isolated input');
+    const swIsoCard = document.getElementById('setting-isolated-card');
+    const btnClearRules = document.getElementById('btn-clear-rules-only');
+    const btnClearUids = document.getElementById('btn-clear-uids-only');
+    const btnClearAll = document.getElementById('btn-clear-all');
+
+    if (swSafe)
+        swSafe.onchange = e => exec(e.target.checked ? `touch ${FILES.disable}` : `rm ${FILES.disable}`);
+
+    if (swIso && swIsoCard) {
+        swIso.onchange = async (e) => {
+            const isChecked = e.target.checked;
+            swIsoCard.dataset.busy = 'true';
+            await exec(`${NM_BIN} uid block_isolated ${isChecked ? 'on' : 'off'}`);
+            await exec(isChecked ? `touch ${FILES.isolated}` : `rm ${FILES.isolated}`);
+            delete swIsoCard.dataset.busy;
+        };
+    }
+
+    if (btnClearRules) {
+        btnClearRules.onclick = async () => {
             showToast(translate('clear_rules_toast'));
+            try {
+                const clearResult = await exec(`${NM_BIN} rule clear`);
+                if (clearResult.errno !== 0) throw new Error(clearResult.stderr || 'Failed to clear runtime rules');
+                showToast(translate('clear_rules_done'));
+                loadModules();
+            } catch { showToast(translate('save_failed') || "Failed"); }
+        };
+    }
+
+    if (btnClearUids) {
+        btnClearUids.onclick = async () => {
+            showToast(translate('clear_uids_toast'));
+            try {
+                const persistResult = await writeExclusionsJson([]); 
+                if (persistResult.errno !== 0) throw new Error(persistResult.stderr || 'Failed to clear exclusions cache');
+                const clearResult = await exec(`${NM_BIN} uid clear`);
+                if (clearResult.errno !== 0) throw new Error(clearResult.stderr || 'Failed to clear runtime UIDs');
+                showToast(translate('clear_uids_done'));
+                loadExclusions();
+            } catch { showToast(translate('save_failed') || "Failed"); }
+        };
+    }
+
+    if (btnClearAll) {
+        btnClearAll.onclick = async () => {
+            showToast(translate('clear_all_toast'));
             try {
                 const persistResult = await writeExclusionsJson([]); 
                 if (persistResult.errno !== 0) throw new Error(persistResult.stderr || 'Failed to clear exclusions cache');
                 const clearResult = await exec(`${NM_BIN} clear all`);
                 if (clearResult.errno !== 0) throw new Error(clearResult.stderr || 'Failed to clear runtime rules');
-                showToast(translate('clear_rules_done'));
+                showToast(translate('clear_all_done'));
                 loadModules();
                 loadExclusions();
             } catch { showToast(translate('save_failed')); }
@@ -968,6 +1466,39 @@ async function refreshCurrentView() {
     else if (id === 'view-options') await loadOptions();
 }
 
+let nmUidModalResolver = null;
+let nmUidModalPendingValue = null;
+
+function closeUidModalFromHistory() {
+    const modal = document.getElementById('uid-input-modal');
+    if (!modal?.classList.contains('active')) return;
+    modal.classList.remove('active');
+    document.getElementById('manual-uid-input')?.blur();
+    const resolve = nmUidModalResolver;
+    const value = nmUidModalPendingValue;
+    nmUidModalResolver = null;
+    nmUidModalPendingValue = null;
+    resolve?.(value);
+}
+
+function getManualUid() {
+    return new Promise(resolve => {
+        nmUidModalResolver = resolve;
+        nmUidModalPendingValue = null;
+        const modalDialog = document.getElementById('uid-input-modal');
+        const input = document.getElementById('manual-uid-input');
+        const btnCancel = document.getElementById('btn-cancel-uid');
+        const btnAdd = document.getElementById('btn-confirm-uid');
+        modalDialog.classList.add('active');
+        input.value = '';
+        setTimeout(() => input.focus(), 150);
+        nmPush({ level: 3 });
+        btnCancel.onclick = () => history.back();
+        btnAdd.onclick = () => { nmUidModalPendingValue = input.value; history.back(); };
+        modalDialog.onclick = (e) => { if (e.target === modalDialog) history.back(); };
+    });
+}
+
 function initDelegationAndAttach() {
     const updateModuleCardDOM = async (card, modId) => {
         const { stdout } = await exec(`${NM_BIN} rule list --json 2>/dev/null`);
@@ -976,9 +1507,21 @@ function initDelegationAndAttach() {
         activeRules.forEach(r => { if (r?.real?.startsWith(`${MOD_DIR}/${modId}/`)) newFileCount++; });
         const nowLoaded = newFileCount > 0;
         const toggleChecked = card.querySelector('.switch-input').checked;
-        const statusKey = nowLoaded ? (toggleChecked ? 'status_loaded' : 'status_active') : (toggleChecked ? 'status_inactive' : 'status_disabled');
-        card.querySelector('.file-count span').textContent = translate('modules_injected_files', { count: newFileCount });
-        card.querySelector('.module-info p').textContent = `${translate('status_label')}: ${translate(statusKey)}`;
+        const hasSkipMount = card.querySelector('.btn-skip-action')?.classList.contains('unskip');
+        const statusKey = nowLoaded ? ((!toggleChecked || hasSkipMount) ? 'status_loaded' : 'status_active') : (!toggleChecked ? 'status_disabled' : (hasSkipMount ? 'status_skipped' : 'status_inactive'));
+
+        const filesChip = card.querySelector('.files-chip');
+        if (newFileCount > 0) {
+            filesChip.style.display = '';
+            card.querySelector('.files-count-text').textContent = translate('modules_injected_files', { count: newFileCount });
+        } else {
+            filesChip.style.display = 'none';
+        }
+
+        const statusChip = card.querySelector('.status-chip');
+        statusChip.textContent = translate(statusKey);
+        statusChip.className = `status-chip md-chip status-${statusKey.replace('status_', '')}`;
+
         const hotBtn = card.querySelector('.btn-hot-action');
         const btnSpan = hotBtn.querySelector('span');
 
@@ -1050,6 +1593,30 @@ function initDelegationAndAttach() {
         }
     });
 
+    document.getElementById('modules-list')?.addEventListener('click', (e) => {
+    const skipBtn = e.target.closest('.btn-skip-action');
+    if (skipBtn && !skipBtn.disabled) {
+        skipBtn.disabled = true;
+        const card = skipBtn.closest('.module-card');
+        const modId = card.dataset.moduleId;
+        const wasSkipped = skipBtn.classList.contains('unskip');
+        const skipFile = `${MOD_DIR}/${modId}/skip_mount`;
+
+        setTimeout(async () => {
+            try {
+                await exec(wasSkipped ? `rm -f ${skipFile}` : `touch ${skipFile}`);
+                skipBtn.classList.toggle('unskip', !wasSkipped);
+                skipBtn.querySelector('span').textContent = translate(!wasSkipped ? 'modules_unskip' : 'modules_skip');
+                await updateModuleCardDOM(card, modId);
+            } catch (err) {
+                showToast(`Error: ${err.message}`);
+            } finally {
+                skipBtn.disabled = false;
+            }
+        }, 0);
+    }
+});
+
     document.getElementById('exclusions-list')?.addEventListener('click', (e) => {
         const delBtn = e.target.closest('.btn-delete');
         if (delBtn) {
@@ -1065,7 +1632,7 @@ function initDelegationAndAttach() {
     });
 
     let pressTimer, touchMoved = false;
-    const exitMultiSelectMode = () => {
+    const exitMultiSelectMode = window.exitMultiSelectMode = () => {
         isMultiSelectMode = false;
         selectedAppsMap.clear();
         document.querySelectorAll('.app-item.selected').forEach(el => el.classList.remove('selected'));
@@ -1155,26 +1722,6 @@ function initDelegationAndAttach() {
                 await loadExclusions();
             }
         } else {
-            const getManualUid = () => new Promise(resolve => {
-                const modalDialog = document.getElementById('uid-input-modal');
-                const input = document.getElementById('manual-uid-input');
-                const btnCancel = document.getElementById('btn-cancel-uid');
-                const btnAdd = document.getElementById('btn-confirm-uid');
-                modalDialog.classList.add('active');
-                input.value = '';
-                setTimeout(() => input.focus(), 150);
-                const cleanup = () => {
-                    modalDialog.classList.remove('active');
-                    input.blur();
-                    btnCancel.onclick = null;
-                    btnAdd.onclick = null;
-                    modalDialog.onclick = null;
-                };
-                btnCancel.onclick = () => { cleanup(); resolve(null); };
-                btnAdd.onclick = () => { cleanup(); resolve(input.value); };
-                modalDialog.onclick = (e) => {  if (e.target === modalDialog) { cleanup(); resolve(null); }  };
-            });
-
             const manualUid = await getManualUid();
             if (manualUid && /^\d+$/.test(manualUid.trim())) {
                 closeAppSelector();
@@ -1191,7 +1738,9 @@ function initDelegationAndAttach() {
             exitMultiSelectMode();
         }
     });
+
     document.getElementById('btn-close-modal')?.addEventListener('click', () => {
+        closeAppSelector();
         exitMultiSelectMode();
     });
 
@@ -1230,13 +1779,13 @@ function initScrollListener() {
 document.addEventListener('DOMContentLoaded', async () => {
     await setAppLocale((localStorage.getItem('nm_locale') || navigator.language || 'en').split('-')[0], false);
     applyIcons();
-    syncSystemBarTheme();
     initNavigation();
     initDelegationAndAttach();
     initScrollListener();
     updateTopAppBar();
     viewLoadState['view-home'] = true;
     loadHome();
+    restoreThemeFromDisk();
     document.body.classList.remove('loading');
     if ('requestIdleCallback' in window) {
         requestIdleCallback(() => ensureAppsCache(true));
