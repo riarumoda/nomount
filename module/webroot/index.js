@@ -337,11 +337,11 @@ const _PALETTE_ROLES = {
 };
 
 _PALETTE_ROLES.amoled = Object.assign({}, _PALETTE_ROLES.dark, {
-    surface:                ['neutral', 4, 0.02],
-    background:             ['neutral', 4, 0.02],
-    surfaceContainer:       ['neutral', 8, 0.08],
-    surfaceContainerHigh:   ['neutral', 12, 0.12],
-    surfaceContainerHighest:['neutral', 16, 0.16],
+    surface:                ['neutral', 0, 0],
+    background:             ['neutral', 0, 0],
+    surfaceContainer:       ['neutral', 4, 0.08],
+    surfaceContainerHigh:   ['neutral', 8, 0.12],
+    surfaceContainerHighest:['neutral', 12, 0.16],
 });
 
 const _PALETTE_HUES = {
@@ -800,9 +800,18 @@ async function loadModule(modId) {
         valid_dirs=""
         for p in ${TARGET_PARTITIONS}; do [ -d "$p" ] && { [ -d "/$p" ] || [ -d "/system/$p" ]; } && valid_dirs="$valid_dirs $p"; done
         [ -z "$valid_dirs" ] && exit 0
-        find -L $valid_dirs \\( -type d -o -type c -o -name ".replace" \\) -exec sh "${RULE_PATHS}" path "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule add --whiteout
 
-        find -L $valid_dirs  \\( -type f -o -type l \\) ! -name ".replace" -exec sh "${RULE_PATHS}" pair "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule add
+        find -L $valid_dirs \\( -type d -o -type c -o -name ".replace" -o -name ".remove" \\) \
+            -exec sh "${RULE_PATHS}" path "${modPath}" {} + 2>/dev/null \
+            | xargs -0 -r -n 200 ${NM_BIN} rule add --whiteout
+
+        find -L $valid_dirs -name ".replace" \
+            -exec sh "${RULE_PATHS}" opaque "${modPath}" {} + 2>/dev/null \
+            | xargs -0 -r -n 200 ${NM_BIN} rule add --opaque
+
+        find -L $valid_dirs \\( -type f -o -type l \\) ! -name ".replace" ! -name ".remove" \
+            -exec sh "${RULE_PATHS}" pair "${modPath}" {} + 2>/dev/null \
+            | xargs -0 -r -n 200 ${NM_BIN} rule add
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
@@ -814,13 +823,15 @@ async function unloadModule(modId) {
         valid_dirs=""
         for p in ${TARGET_PARTITIONS}; do [ -d "$p" ] && { [ -d "/$p" ] || [ -d "/system/$p" ]; } && valid_dirs="$valid_dirs $p"; done
         [ -z "$valid_dirs" ] && exit 0
-        find -L $valid_dirs \\( -type f -o -type l -o -type c -o -type d \\) -exec sh "${RULE_PATHS}" path "${modPath}" {} + 2>/dev/null | xargs -0 -r -n 200 ${NM_BIN} rule del
+        find -L $valid_dirs \\( -type f -o -type l -o -type c -o -type d \\) \
+            -exec sh "${RULE_PATHS}" del "${modPath}" {} + 2>/dev/null \
+            | xargs -0 -r -n 200 ${NM_BIN} rule del
     `;
     try { await exec(script); } catch (e) { throw e; }
 }
 
 // Apps & Exclusions
-let allAppsCache = [], showSystemApps = false, appLoadingPromise = null, appListRenderIndex = 0,
+let allAppsCache = [], showSystemApps = localStorage.getItem('nm_show_system_apps') === 'true', appLoadingPromise = null, appListRenderIndex = 0,
     currentlyDisplayedApps = [], listObserver = null, filterTimeout, exclusionsLoadId = 0,
     isMultiSelectMode = false, selectedAppsMap = new Map();
 
@@ -1034,10 +1045,6 @@ function openAppSelector() {
     searchInput.value = '';
     if (sysSwitch) sysSwitch.checked = showSystemApps;
 
-    document.getElementById('btn-close-modal').onclick = () => { 
-        closeAppSelector();
-    };
-
     container.innerHTML = `<div class="loading-spinner">${translate('loading') || 'Loading apps...'}</div>`;
     listObserver = new IntersectionObserver((entries) => { 
         if (entries[0].isIntersecting) renderNextAppBatch(); 
@@ -1049,7 +1056,11 @@ function openAppSelector() {
             filterAndRender();
             searchInput.oninput = (e) => filterAndRender(e.target.value);
             document.getElementById('btn-filter-toggle').onclick = () => document.getElementById('filter-menu').classList.toggle('active');
-            if (sysSwitch) sysSwitch.onchange = (e) => { showSystemApps = e.target.checked; filterAndRender(searchInput.value); };
+            if (sysSwitch) sysSwitch.onchange = (e) => { 
+                showSystemApps = e.target.checked;
+                localStorage.setItem('nm_show_system_apps', showSystemApps);
+                filterAndRender(searchInput.value);
+            };
         } catch (e) { 
             renderTextState(container, 'error-message', `${translate('load_failed') || 'Failed'}`); 
         }

@@ -133,12 +133,18 @@ _Static_assert(__builtin_offsetof(struct nm_workspace, payload) == 0, "payload m
 struct nm_rule_hdr {
     unsigned int flags;
     unsigned int uid;
+    unsigned int uid_end;
+    unsigned int deny_start;
+    unsigned int deny_end;
     unsigned short v_len;
     unsigned short r_len;
 } __attribute__((packed));
 
 struct nm_del_hdr {
     unsigned int uid;
+    unsigned int uid_end;
+    unsigned int deny_start;
+    unsigned int deny_end;
     unsigned short v_len;
 } __attribute__((packed));
 
@@ -147,7 +153,11 @@ struct nm_args {
     int data_start_idx;
     int is_json;
     int is_whiteout;
+    int is_opaque;
     unsigned int target_uid;
+    unsigned int target_uid_end;
+    unsigned int deny_start;
+    unsigned int deny_end;
 };
 
 /* --- UTILS --- */
@@ -162,7 +172,11 @@ static noinline void parse_arguments(long argc, char **argv, struct nm_args *par
     parsed_args->data_start_idx = 2;
     parsed_args->is_json = 0;
     parsed_args->is_whiteout = 0;
+    parsed_args->is_opaque = 0;
     parsed_args->target_uid = 0;
+    parsed_args->target_uid_end = 0;
+    parsed_args->deny_start = 0;
+    parsed_args->deny_end = 0;
 
     if (argc < 2) return;
 
@@ -229,7 +243,9 @@ static noinline void list_print_strn(struct nm_output *out, const char *s, unsig
         if (out->used == PATH_MAX) list_flush(out);
         unsigned long n = PATH_MAX - out->used;
         if (n > len) n = len;
-        for (unsigned long i = 0; i < n; i++) out->buffer[out->used++] = *s++;
+        char *p = out->buffer + out->used;
+        for (unsigned long i = 0; i < n; i++) *p++ = *s++;
+        out->used += n;
         len -= n;
     }
 }
